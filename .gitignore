@@ -3,3 +3,4 @@ __pycache__/
 .pytest_cache/
 daily_spend.json
 cooldown_state.json
+data/.wc_match_cache.json
