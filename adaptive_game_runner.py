@@ -3,7 +3,8 @@
 
 Hermes cron invokes this every 5 minutes. It is silent outside live/pregame
 World Cup windows. During game windows it refreshes WC player stats and runs the
-skill in persisted $SIM mode.
+skill in dry-run/paper-preview mode unless a future persisted non-SIM paper venue
+is explicitly added.
 """
 from __future__ import annotations
 
@@ -86,9 +87,11 @@ def filtered(text: str) -> str:
     for line in text.splitlines():
         if line.startswith("venue='sim' — PAPER trading with virtual $SIM"):
             continue
-        if line.startswith("No eligible value entries this run."):
+        if line.startswith("venue='polymarket' — LIVE trading with real funds."):
+            # The SDK banner is venue-based and misleading here: this runner
+            # deliberately omits --live, so the child strategy is a dry-run.
             continue
-        if line.startswith("Daily spent:"):
+        if line.startswith("$SIM paper mode active"):
             continue
         lines.append(line)
     return "\n".join(lines) + ("\n" if lines else "")
@@ -118,7 +121,7 @@ def run_strategy(args: argparse.Namespace, contexts: list[GameContext]) -> int:
                 print(refresh.stderr, end="", file=sys.stderr)
             return refresh.returncode
 
-    cmd = [sys.executable, str(ROOT / "player_goal_value.py"), "--live", "--venue", args.venue, "--quiet"]
+    cmd = [sys.executable, str(ROOT / "player_goal_value.py"), "--venue", args.venue, "--quiet"]
     proc = subprocess.run(cmd, cwd=str(ROOT), env=env, text=True, capture_output=True)
     out = filtered(proc.stdout)
     err = filtered(proc.stderr)
