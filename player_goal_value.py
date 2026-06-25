@@ -31,6 +31,11 @@ from typing import Dict, List, Optional, Tuple
 
 from simmer_sdk.skill import get_config_path, load_config, update_config
 
+try:
+    from paper_ledger import record_recommendation
+except Exception:  # ledger is optional; dry-run should still work
+    record_recommendation = None
+
 sys.stdout.reconfigure(line_buffering=True)
 
 
@@ -656,6 +661,26 @@ def run(
             if ok:
                 any_ok = True
                 run_spent += amt
+                if not live and record_recommendation is not None:
+                    record_recommendation(
+                        skill="worldcup-player-goal-value",
+                        instrument_id=mid,
+                        title=m.question,
+                        side="yes",
+                        action="buy",
+                        entry_price=px,
+                        stake_usd=amt,
+                        venue=venue,
+                        kind="single",
+                        source="dry-run-limit",
+                        raw={
+                            "player": player,
+                            "fair_yes": round(fair, 5),
+                            "ask_yes": round(ask_yes, 5),
+                            "edge": round(edge, 5),
+                            "offset_cents": off_c,
+                        },
+                    )
                 placed.append({
                     "player": player,
                     "question": m.question,
