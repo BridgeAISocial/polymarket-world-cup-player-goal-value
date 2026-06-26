@@ -77,7 +77,7 @@ ROLE_MULTIPLIERS = {
 
 PLAYER_DATA_CACHE: Optional[Dict[str, dict]] = None
 
-_client = None
+_clients = {}
 VENUE_CHOICES = ("sim", "polymarket", "kalshi")
 
 
@@ -107,16 +107,16 @@ def load_daily_spend() -> dict:
 
 
 def get_client(live: bool, venue: str):
-    global _client
-    if _client is None:
-        from simmer_sdk import SimmerClient
+    cache_key = (venue, bool(live))
+    if cache_key not in _clients:
+        from scripts.client_factory import create_simmer_client
 
         key = os.environ.get("SIMMER_API_KEY")
         if not key:
             print("Error: SIMMER_API_KEY not set")
             sys.exit(1)
-        _client = SimmerClient(api_key=key, venue=venue, live=live)
-    return _client
+        _clients[cache_key] = create_simmer_client(api_key=key, venue=venue, live=live)
+    return _clients[cache_key]
 
 
 def get_positions(client, venue: str) -> List[dict]:
