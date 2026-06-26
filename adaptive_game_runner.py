@@ -97,6 +97,29 @@ def filtered(text: str) -> str:
     return "\n".join(lines) + ("\n" if lines else "")
 
 
+def player_data_is_fresh(env: dict[str, str], max_age_minutes: float) -> bool:
+    raw_path = env.get("SIMMER_WCPGV_PLAYER_DATA_FILE") or "data/wc_players_filtered.csv"
+    data_path = Path(raw_path)
+    if not data_path.is_absolute():
+        data_path = ROOT / data_path
+    if not data_path.exists():
+        return False
+    age_seconds = datetime.now(timezone.utc).timestamp() - data_path.stat().st_mtime
+    return age_seconds <= max_age_minutes * 60
+
+
+def should_refresh_player_data(args: argparse.Namespace, env: dict[str, str]) -> bool:
+    if args.skip_refresh:
+        return False
+    try:
+        max_age_minutes = float(env.get("SIMMER_WCPGV_REFRESH_MAX_AGE_MIN", "360"))
+    except ValueError:
+        max_age_minutes = 360.0
+    if max_age_minutes <= 0:
+        return True
+    return not player_data_is_fresh(env, max_age_minutes)
+
+
 def run_strategy(args: argparse.Namespace, contexts: list[GameContext]) -> int:
     print("World Cup player-goal game window active:")
     for ctx in contexts:
@@ -112,7 +135,7 @@ def run_strategy(args: argparse.Namespace, contexts: list[GameContext]) -> int:
     env.setdefault("SIMMER_WCPGV_DAILY_BUDGET", "40")
     env.setdefault("SIMMER_WCPGV_MAX_TRADES", "3")
 
-    if not args.skip_refresh:
+    if should_refresh_player_data(args, env):
         refresh = subprocess.run([sys.executable, str(ROOT / "scripts" / "fetch_wc_stats.py")], cwd=str(ROOT), env=env, text=True, capture_output=True)
         if refresh.returncode != 0:
             if refresh.stdout:
