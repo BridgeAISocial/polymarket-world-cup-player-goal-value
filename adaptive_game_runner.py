@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard"
+GAMMA_EVENTS_URL = "https://gamma-api.polymarket.com/events/keyset"
 PREP_WINDOW_SECONDS = 30 * 60
 LIVE_STATES = {"in"}
 PREP_STATES = {"pre"}
@@ -82,6 +84,44 @@ def active_game_contexts(now_ts: float | None = None) -> list[GameContext]:
     return contexts
 
 
+def normalize_title(text: str) -> str:
+    return " ".join((text or "").replace("–", "-").split()).lower()
+
+
+def active_polymarket_event_slugs(contexts: list[GameContext], max_pages: int = 3) -> list[str]:
+    wanted = {normalize_title(ctx.name) for ctx in contexts if ctx.name}
+    if not wanted:
+        return []
+    slugs: list[str] = []
+    cursor = None
+    for _ in range(max_pages):
+        params = {
+            "tag_id": "102232",
+            "related_tags": "true",
+            "closed": "false",
+            "limit": "100",
+            "include_best_lines": "true",
+        }
+        if cursor:
+            params["after_cursor"] = cursor
+        query = urllib.parse.urlencode(params)
+        req = urllib.request.Request(f"{GAMMA_EVENTS_URL}?{query}", headers={"User-Agent": "Hermes/WCPlayerGoalValue"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            break
+        for event in data.get("events") or []:
+            title = normalize_title(str(event.get("title") or ""))
+            slug = str(event.get("slug") or "").strip()
+            if slug and title in wanted:
+                slugs.append(slug)
+        cursor = data.get("next_cursor")
+        if not cursor:
+            break
+    return list(dict.fromkeys(slugs))
+
+
 def filtered(text: str) -> str:
     lines = []
     for line in text.splitlines():
@@ -134,6 +174,10 @@ def run_strategy(args: argparse.Namespace, contexts: list[GameContext]) -> int:
     env.setdefault("SIMMER_WCPGV_MAX_POSITION", "12")
     env.setdefault("SIMMER_WCPGV_DAILY_BUDGET", "40")
     env.setdefault("SIMMER_WCPGV_MAX_TRADES", "3")
+    active_slugs = active_polymarket_event_slugs(contexts)
+    if active_slugs:
+        env["SIMMER_WCPGV_COMBO_EVENT_SLUGS"] = ",".join(active_slugs)
+        print(f"Polymarket event filter: {env['SIMMER_WCPGV_COMBO_EVENT_SLUGS']}")
 
     if should_refresh_player_data(args, env):
         refresh = subprocess.run([sys.executable, str(ROOT / "scripts" / "fetch_wc_stats.py")], cwd=str(ROOT), env=env, text=True, capture_output=True)

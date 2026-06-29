@@ -57,6 +57,8 @@ CONFIG_SCHEMA = {
     "expected_single_market_matches": {"env": "SIMMER_WCPGV_EXPECTED_SINGLE_MATCHES", "default": 1.0, "type": float, "help": "Expected matches for single-game scoring markets"},
     "expected_season_market_matches": {"env": "SIMMER_WCPGV_EXPECTED_SEASON_MATCHES", "default": 8.0, "type": float, "help": "Expected remaining matches for season-long scoring props"},
     "allow_proxy_price_in_sim_only": {"env": "SIMMER_WCPGV_ALLOW_PROXY_SIM", "default": True, "type": bool, "help": "When no ask quote is available, allow current-probability proxy pricing in sim venue only"},
+    "combo_event_slugs": {"env": "SIMMER_WCPGV_COMBO_EVENT_SLUGS", "default": "", "type": str, "help": "Comma-separated Polymarket event slugs whose premade combo player-goal legs should be imported"},
+    "combo_event_scan_pages": {"env": "SIMMER_WCPGV_COMBO_EVENT_SCAN_PAGES", "default": 3, "type": int, "help": "World Cup event keyset pages to scan for premade player-goal combo legs"},
 }
 
 _config = load_config(CONFIG_SCHEMA, __file__, slug="polymarket-world-cup-player-goal-value")
@@ -170,6 +172,122 @@ def api_market_search(query: str, limit: int) -> List[SimpleNamespace]:
     return out
 
 
+def gamma_json(path: str, params: Optional[dict] = None):
+    if params:
+        path = f"{path}?{urllib.parse.urlencode(params)}"
+    url = f"https://gamma-api.polymarket.com{path}"
+    req = urllib.request.Request(url, headers={"User-Agent": "Hermes/WCPlayerGoalValue", "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def configured_combo_event_slugs() -> List[str]:
+    raw = str(_config.get("combo_event_slugs", "") or "")
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
+def discover_worldcup_event_slugs_for_combos(limit_pages: int) -> List[str]:
+    """Find active World Cup events whose premade combos may include scorer props.
+
+    Polymarket's sports event page exposes some player-goal markets through the
+    premade-combos endpoint even when Gamma's normal event market list and
+    Simmer's indexed market search do not include those markets yet.
+    """
+    slugs: List[str] = []
+    cursor = None
+    pages = max(0, min(int(limit_pages), 10))
+    for _ in range(pages):
+        params = {
+            "tag_id": "102232",  # World Cup dashboard tag
+            "related_tags": "true",
+            "closed": "false",
+            "limit": "100",
+            "include_best_lines": "true",
+        }
+        if cursor:
+            params["after_cursor"] = cursor
+        try:
+            data = gamma_json("/events/keyset", params)
+        except Exception:
+            break
+        for event in data.get("events") or []:
+            slug = str(event.get("slug") or "").strip()
+            if slug:
+                slugs.append(slug)
+        cursor = data.get("next_cursor")
+        if not cursor:
+            break
+    return slugs
+
+
+def combo_leg_question(leg: dict) -> str:
+    display = leg.get("display") or {}
+    title = str(display.get("marketTitle") or "").strip()
+    event = str(display.get("eventTitle") or leg.get("eventTitle") or "").strip()
+    event = re.sub(r"\s+-\s+Player Props\s*$", "", event, flags=re.IGNORECASE)
+    m = re.match(r"(.+?):\s*1\+\s+goals?", title, flags=re.IGNORECASE)
+    if m:
+        player = m.group(1).strip()
+        suffix = f" in {event}" if event else ""
+        return f"Will {player} score at least one goal{suffix}?"
+    return title
+
+
+def fetch_premade_combo_player_goal_markets(event_slug: str) -> List[SimpleNamespace]:
+    try:
+        data = gamma_json(f"/events/slug/{event_slug}/premade-combos", {"placement": "event_under_chart"})
+    except Exception:
+        return []
+
+    out: List[SimpleNamespace] = []
+    seen = set()
+    for shelf in data.get("shelves") or []:
+        for combo in shelf.get("combos") or []:
+            for leg in combo.get("legs") or []:
+                market_type = str(leg.get("sportsMarketType") or "").lower()
+                if market_type != "soccer_player_goals":
+                    continue
+                mid = str(leg.get("marketId") or "").strip()
+                if not mid or mid in seen:
+                    continue
+                seen.add(mid)
+                prices = leg.get("prices") or {}
+                try:
+                    yes_f = float(prices.get("yes"))
+                except Exception:
+                    yes_f = None
+                out.append(
+                    SimpleNamespace(
+                        id=mid,
+                        question=combo_leg_question(leg),
+                        spread=None,
+                        current_probability=yes_f,
+                        yes_ask=yes_f,
+                        best_ask=yes_f,
+                        slug=leg.get("marketSlug"),
+                        event_slug=event_slug,
+                        prop_event_slug=leg.get("eventSlug"),
+                        import_source="gamma_premade_combo",
+                    )
+                )
+    return out
+
+
+def discover_combo_player_goal_markets() -> List[SimpleNamespace]:
+    slugs = configured_combo_event_slugs()
+    if not slugs:
+        slugs = discover_worldcup_event_slugs_for_combos(int(_config.get("combo_event_scan_pages", 3)))
+    out: List[SimpleNamespace] = []
+    seen = set()
+    for slug in slugs:
+        for m in fetch_premade_combo_player_goal_markets(slug):
+            if m.id in seen:
+                continue
+            seen.add(m.id)
+            out.append(m)
+    return out
+
+
 def discover_markets(client) -> List:
     base_markets = client.get_markets(
         status="active",
@@ -186,6 +304,7 @@ def discover_markets(client) -> List:
     extra: List[SimpleNamespace] = []
     for q in queries:
         extra.extend(api_market_search(q, limit=int(_config["scan_limit"])))
+    extra.extend(discover_combo_player_goal_markets())
 
     merged = []
     seen = set()
@@ -518,6 +637,11 @@ def run(
     markets = discover_markets(client)
 
     cands = [m for m in markets if is_player_goal_market(m.question)]
+    focused_slugs = set(configured_combo_event_slugs())
+    if focused_slugs:
+        focused = [m for m in cands if getattr(m, "event_slug", None) in focused_slugs]
+        if focused:
+            cands = focused
 
     if not quiet:
         print("⚽ Player Goal Value")
@@ -561,7 +685,16 @@ def run(
         if tnow - last < float(_config["cooldown_hours"]) * 3600:
             continue
 
-        ctx = client.get_market_context(mid, venue=venue) or {}
+        try:
+            ctx = client.get_market_context(mid, venue=venue) or {}
+        except Exception as e:
+            ctx = {}
+            if live:
+                if not quiet:
+                    print(f"skip-context-error: {m.question[:72]}... {type(e).__name__}: {e}")
+                continue
+            if not quiet:
+                print(f"context-unavailable(dry-run): {m.question[:72]}... {type(e).__name__}: {e}")
         ask_yes = get_yes_ask(ctx, m)
         if ask_yes is None:
             allow_proxy = bool(_config.get("allow_proxy_price_in_sim_only", True)) and venue == "sim"
