@@ -3,7 +3,7 @@ name: polymarket-world-cup-player-goal-value
 description: Trade Polymarket player-goal YES markets (World Cup + league + match props) using role/minutes/penalty/value scoring and patient limit orders.
 metadata:
   author: Alyna + Hermes
-  version: "0.1.6"
+  version: "0.1.7"
   displayName: Polymarket World Cup Player Goal Value
   difficulty: intermediate
 ---
@@ -80,6 +80,13 @@ python player_goal_value.py --set limit_splits=0.2,0.3,0.5
 - Unknown player markets are skipped instead of falling back to synthetic priors.
 - Designed for low-liquidity conditions where market chasing is penalized.
 - Start in dry-run/sim and tune `expected_tournament_matches`, `expected_single_market_matches`, `expected_season_market_matches`, `min_edge`, and minute filters after collecting outcomes.
+
+## Bugfixes applied in v0.1.7
+
+- Added game-window adaptive runner support so frequent cron ticks stay silent off-window and run only around relevant World Cup fixtures.
+- Added player-data freshness gating and scan-limit controls so live/prep window runs do not repeatedly refresh slow stats or exceed scheduler timeouts.
+- Added local client factory wiring for safer venue/live client construction in local dogfood runs.
+- Refreshed bundled World Cup player data from the merged Understat + custom player + ESPN World Cup pipeline.
 
 ## Bugfixes applied in v0.1.6
 

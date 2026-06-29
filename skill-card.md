@@ -4,7 +4,9 @@ Trade Polymarket player-goal YES markets (World Cup + league + match props) usin
 This skill is ready for commercial/non-commercial use. <br>
 
 ## Publisher: <br>
-[alyna123t](https://clawhub.ai/user/alyna123t) <br>
+BridgeAISocial / Nicholas Koh <br>
+
+Forked/fixed from the original [alyna123t ClawHub skill](https://clawhub.ai/alyna123t/polymarket-world-cup-player-goal-value). <br>
 
 ### License/Terms of Use: <br>
 MIT-0 <br>
@@ -40,7 +42,8 @@ Mitigation: Prefer live Polymarket mode when priced GTC limit orders are expecte
 **Other Properties Related to Output:** [May produce dry-run order previews, simulated account state, or live trade requests depending on command flags, venue, and credentials.] <br>
 
 ## Skill Version(s): <br>
-0.1.6 (source: server release metadata and SKILL.md frontmatter) <br>
+0.1.7 (BridgeAISocial fork/fix release; source repo + ClawHub publish metadata when available) <br>
+0.1.6 (original upstream release metadata and SKILL.md frontmatter) <br>
 
 ## Ethical Considerations: <br>
 Users should evaluate whether this skill is appropriate for their environment, review any generated or modified files before relying on them, and apply their organization's safety, security, and compliance requirements before deployment. <br>
