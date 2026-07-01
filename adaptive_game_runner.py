@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.parse
@@ -137,6 +138,68 @@ def filtered(text: str) -> str:
     return "\n".join(lines) + ("\n" if lines else "")
 
 
+def compact_game_line(contexts: list[GameContext]) -> str:
+    parts = []
+    for ctx in contexts:
+        label = "LIVE" if ctx.mode == "live" else "PREP"
+        detail = f" {ctx.detail}" if ctx.detail else ""
+        score = f" {ctx.score}" if ctx.score else ""
+        parts.append(f"{label} {ctx.name}{detail}{score}")
+    return "; ".join(parts)
+
+
+def compact_strategy_output(text: str, contexts: list[GameContext]) -> str:
+    """Convert verbose strategy stdout into a compact Telegram cron summary."""
+    placed_re = re.compile(
+        r"^- (?P<player>.+?) \| \$(?P<amount>[0-9.]+) @ (?P<price>[0-9.]+) "
+        r"\| edge=(?P<edge>[0-9.]+).*\| (?P<mode>\S+)\s*$"
+    )
+    budget_re = re.compile(r"^Daily spent: \$(?P<spent>[0-9.]+) / \$(?P<budget>[0-9.]+)")
+    entries = []
+    budget = None
+    no_entries = False
+    for line in text.splitlines():
+        m = placed_re.match(line)
+        if m:
+            d = m.groupdict()
+            entries.append({
+                "player": d["player"],
+                "amount": float(d["amount"]),
+                "price": float(d["price"]),
+                "edge": float(d["edge"]),
+                "mode": d["mode"],
+            })
+            continue
+        m = budget_re.match(line)
+        if m:
+            budget = (float(m.group("spent")), float(m.group("budget")))
+            continue
+        if "No eligible value entries" in line:
+            no_entries = True
+
+    prefix = f"WCPGV dry-run | {compact_game_line(contexts)}"
+    if entries:
+        total = sum(e["amount"] for e in entries)
+        players = sorted({e["player"] for e in entries})
+        player_label = players[0] if len(players) == 1 else f"{len(players)} players"
+        prices = [e["price"] for e in entries]
+        edges = [e["edge"] for e in entries]
+        mode = entries[0]["mode"]
+        summary = (
+            f"{prefix} | {len(entries)} entries {player_label} ${total:.2f} "
+            f"@ {min(prices):.3f}-{max(prices):.3f} edge {min(edges):.3f}-{max(edges):.3f} | {mode}"
+        )
+    elif no_entries:
+        summary = f"{prefix} | no eligible entries"
+    else:
+        compact = " ".join(text.split())
+        summary = f"{prefix} | {compact[:220]}" if compact else prefix
+
+    if budget:
+        summary += f" | spent ${budget[0]:.2f}/${budget[1]:.2f}"
+    return summary + "\n"
+
+
 def player_data_is_fresh(env: dict[str, str], max_age_minutes: float) -> bool:
     raw_path = env.get("SIMMER_WCPGV_PLAYER_DATA_FILE") or "data/wc_players_filtered.csv"
     data_path = Path(raw_path)
@@ -161,12 +224,6 @@ def should_refresh_player_data(args: argparse.Namespace, env: dict[str, str]) ->
 
 
 def run_strategy(args: argparse.Namespace, contexts: list[GameContext]) -> int:
-    print("World Cup player-goal game window active:")
-    for ctx in contexts:
-        label = "LIVE" if ctx.mode == "live" else "PREP"
-        print(f"- {label}: {ctx.name} — {ctx.detail} — score {ctx.score}")
-    print()
-
     env = os.environ.copy()
     env["TRADING_VENUE"] = args.venue
     env.setdefault("SIMMER_WCPGV_PLAYER_DATA_FILE", "data/wc_players_filtered.csv")
@@ -177,7 +234,6 @@ def run_strategy(args: argparse.Namespace, contexts: list[GameContext]) -> int:
     active_slugs = active_polymarket_event_slugs(contexts)
     if active_slugs:
         env["SIMMER_WCPGV_COMBO_EVENT_SLUGS"] = ",".join(active_slugs)
-        print(f"Polymarket event filter: {env['SIMMER_WCPGV_COMBO_EVENT_SLUGS']}")
 
     if should_refresh_player_data(args, env):
         refresh = subprocess.run([sys.executable, str(ROOT / "scripts" / "fetch_wc_stats.py")], cwd=str(ROOT), env=env, text=True, capture_output=True)
@@ -193,7 +249,7 @@ def run_strategy(args: argparse.Namespace, contexts: list[GameContext]) -> int:
     out = filtered(proc.stdout)
     err = filtered(proc.stderr)
     if out:
-        print(out, end="")
+        print(compact_strategy_output(out, contexts), end="")
     if err:
         print(err, end="", file=sys.stderr)
     return proc.returncode
